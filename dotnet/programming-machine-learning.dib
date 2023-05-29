@@ -1,0 +1,118 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"name":"csharp","aliases":["c#","C#"],"languageName":"C#"},{"name":"vscode","aliases":["frontend"],"languageName":null},{"name":".NET","aliases":[]},{"name":"fsharp","aliases":["f#","F#"],"languageName":"F#"},{"name":"html","aliases":[],"languageName":"HTML"},{"name":"kql","aliases":[],"languageName":"KQL"},{"name":"mermaid","aliases":[],"languageName":"Mermaid"},{"name":"pwsh","aliases":["powershell"],"languageName":"PowerShell"},{"name":"sql","aliases":[],"languageName":"SQL"},{"name":"value","aliases":[]}]}}
+
+#!fsharp
+
+#r "nuget: FSharp.Data"
+#r "nuget: Plotly.NET"
+#r "nuget: Plotly.NET.Interactive"
+
+#!fsharp
+
+open FSharp.Data
+open Plotly.NET
+
+#!fsharp
+
+let text = CsvFile.Load(System.IO.Path.Join([|__SOURCE_DIRECTORY__; "../data/pizza.csv"|]), separators=",", hasHeaders=true)
+
+let x,y = [|for row in text.Rows -> (float row[0], float row[1])|] |> Array.unzip
+
+#!fsharp
+
+x[0..4]
+
+#!fsharp
+
+y[0..4]
+
+#!fsharp
+
+[ for x in 1.0 .. 100.0 -> (x, x ** 2.0) ]
+    |> Chart.Line
+
+#!fsharp
+
+Chart.Point(x, y, Name = "Data")
+|> Chart.withXAxisStyle("Reservations")
+|> Chart.withYAxisStyle("Pizzas")
+
+#!fsharp
+
+let predict (x: float[]) weight = Array.map ((*) weight) x
+
+let average (x: float[]) = (Array.fold (+) 0.0 x) / (float x.Length)
+
+let (.+) (x: float[]) (y: float[]) = Array.map2 (+) x y
+let (.-) (x: float[]) (y: float[]) = Array.map2 (-) x y
+let (.^) (x: float[]) y = Array.map (fun e -> e ** y) x 
+
+let loss (x: float[]) (y: float[]) weight =
+    average(((predict x weight) .- y) .^ 2.0)
+
+let train x y iterations learningRate =
+    let mutable w = 0.0
+    for i in 0..iterations do
+        let currentLoss = loss x y w
+        //printfn "Iteration %4d => Loss: %.6f" i currentLoss
+        if loss x y (w + learningRate) < currentLoss then
+            w <- w + learningRate
+        elif loss x y (w - learningRate) < currentLoss then
+            w <- w - learningRate
+    w
+
+#!fsharp
+
+let w = train x y 10000 0.01
+printfn "w=%.3f" w
+printfn "Prediction: x=%d => y=%.2f" 20 (predict [|20.0|] w).[0]
+
+#!fsharp
+
+let lineX = [| (Array.min x)..1.0..(Array.max y) |]
+let lineY = predict lineX w
+
+Chart.Line(Array.zip lineX lineY, Name = "Prediction")
+|> Chart.withXAxisStyle "Reservations"
+|> Chart.withYAxisStyle "Pizzas"
+
+#!fsharp
+
+let predict2 (x: float[]) weight bias = Array.map (fun e -> e*weight + bias) x
+
+let loss2 (x: float[]) (y: float[]) weight bias =
+    average(((predict2 x weight bias) .- y) .^ 2.0)
+
+let train2 x y iterations learningRate =
+    let mutable weight = 0.0
+    let mutable bias = 0.0
+    for i in 0..iterations do
+        let currentLoss = loss2 x y weight bias
+        if loss2 x y (weight + learningRate) bias < currentLoss then
+            weight <- weight + learningRate
+        elif loss2 x y (weight - learningRate) bias < currentLoss then
+            weight <- weight - learningRate
+        elif loss2 x y weight (bias + learningRate) < currentLoss then
+            bias <- bias + learningRate
+        elif loss2 x y weight (bias - learningRate) < currentLoss then
+            bias <- bias - learningRate
+    weight, bias
+
+#!fsharp
+
+let w, b = train2 x y 10000 0.01
+
+printfn "w=%.3f, b=%.3f" w b
+printfn "Prediction: x=%d => y=%.2f" 20 (predict2 [|20.0|] w b).[0]
+
+#!fsharp
+
+let lineX = [| (Array.min x)..1.0..(Array.max x) |]
+let lineY = predict2 lineX w b
+
+[ Chart.Point(x, y, Name = "Data");
+  Chart.Line(Array.zip lineX lineY, Name = "Prediction") ]
+|> Chart.combine
+|> Chart.withXAxisStyle "Reservations"
+|> Chart.withYAxisStyle "Pizzas"

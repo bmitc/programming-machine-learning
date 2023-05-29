@@ -1,0 +1,1592 @@
+<!-- livebook:{"persist_outputs":true} -->
+
+# Programming Machine Learning
+
+## Dependencies and Utilities
+
+```elixir
+Mix.install([
+  # :kino,
+  :nimble_csv,
+  :nx,
+  # :vega_lite,
+  {:vega_lite, "~> 0.1.4"},
+  {:kino_vega_lite, "~> 0.1.1"}
+])
+
+alias NimbleCSV, as: CSV
+alias VegaLite, as: Vl
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+VegaLite
+```
+
+```elixir
+defmodule Utilities do
+  def integer(integer_string) do
+    {integer, _} = Integer.parse(integer_string)
+    integer
+  end
+
+  def float(float_string) do
+    {float, _} = Float.parse(float_string)
+    float
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Utilities, <<70, 79, 82, 49, 0, 0, 7, ...>>, {:float, 1}}
+```
+
+```elixir
+import Utilities
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Utilities
+```
+
+## Chapter 1
+
+Load the `pizza.txt` data file and plot the data. The data lists an historical record of the number of pizzas ordered given a number of reservations earlier in the day.
+
+```elixir
+CSV.define(MyParser, separator: "\s")
+
+{reservations, pizza} =
+  Path.join(__ENV__.file, "../../data/pizza.txt")
+  |> Path.expand()
+  |> File.stream!()
+  |> Enum.map(fn line ->
+    String.replace(line, ~r/\s+/, "\s")
+    |> String.trim()
+  end)
+  |> MyParser.parse_enumerable()
+  |> Enum.map(fn [x, y] -> {float(x), float(y)} end)
+  |> Enum.unzip()
+
+reservations = Nx.tensor(reservations)
+pizza = Nx.tensor(pizza)
+
+Vl.new(width: 650, height: 300)
+|> Vl.data_from_values(
+  Reservations: Nx.to_flat_list(reservations),
+  Pizzas: Nx.to_flat_list(pizza)
+)
+|> Vl.mark(:point, filled: true)
+|> Vl.encode_field(:x, "Reservations", type: :quantitative)
+|> Vl.encode_field(:y, "Pizzas", type: :quantitative)
+```
+
+<!-- livebook:{"output":true} -->
+
+```vega-lite
+{"$schema":"https://vega.github.io/schema/vega-lite/v5.json","data":{"values":[{"Pizzas":33.0,"Reservations":13.0},{"Pizzas":16.0,"Reservations":2.0},{"Pizzas":32.0,"Reservations":14.0},{"Pizzas":51.0,"Reservations":23.0},{"Pizzas":27.0,"Reservations":13.0},{"Pizzas":16.0,"Reservations":1.0},{"Pizzas":34.0,"Reservations":18.0},{"Pizzas":17.0,"Reservations":10.0},{"Pizzas":29.0,"Reservations":26.0},{"Pizzas":15.0,"Reservations":3.0},{"Pizzas":15.0,"Reservations":3.0},{"Pizzas":32.0,"Reservations":21.0},{"Pizzas":22.0,"Reservations":7.0},{"Pizzas":37.0,"Reservations":22.0},{"Pizzas":13.0,"Reservations":2.0},{"Pizzas":44.0,"Reservations":27.0},{"Pizzas":16.0,"Reservations":6.0},{"Pizzas":21.0,"Reservations":10.0},{"Pizzas":37.0,"Reservations":18.0},{"Pizzas":30.0,"Reservations":15.0},{"Pizzas":26.0,"Reservations":9.0},{"Pizzas":34.0,"Reservations":26.0},{"Pizzas":23.0,"Reservations":8.0},{"Pizzas":39.0,"Reservations":15.0},{"Pizzas":27.0,"Reservations":10.0},{"Pizzas":37.0,"Reservations":21.0},{"Pizzas":17.0,"Reservations":5.0},{"Pizzas":18.0,"Reservations":6.0},{"Pizzas":25.0,"Reservations":13.0},{"Pizzas":23.0,"Reservations":13.0}]},"encoding":{"x":{"field":"Reservations","type":"quantitative"},"y":{"field":"Pizzas","type":"quantitative"}},"height":300,"mark":{"filled":true,"type":"point"},"width":650}
+```
+
+```elixir
+reservations[0..4]
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+#Nx.Tensor<
+  f32[5]
+  [13.0, 2.0, 14.0, 23.0, 13.0]
+>
+```
+
+```elixir
+pizza[0..4]
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+#Nx.Tensor<
+  f32[5]
+  [33.0, 16.0, 32.0, 51.0, 27.0]
+>
+```
+
+```elixir
+defmodule Chapter1.LinearRegression do
+  import Nx.Defn
+
+  @doc """
+  For a given weight, predict the output for a given input
+  """
+  @spec predict(Nx.Tensor.t(), number()) :: Nx.Tensor.t()
+  defn predict(x, weight) do
+    x * weight
+  end
+
+  @doc """
+  Calculate the loss, as a mean squared error, for the given weight
+  """
+  @spec loss(Nx.Tensor.t(), Nx.Tensor.t(), number()) :: number()
+  def loss(x, y, weight) do
+    Nx.subtract(predict(x, weight), y)
+    |> Nx.power(2)
+    |> Nx.mean()
+    |> Nx.to_number()
+  end
+
+  @doc """
+  Train a linear regression model with a maximum number of iterations
+  """
+  @spec train(Nx.Tensor.t(), Nx.Tensor.t(), non_neg_integer(), float()) ::
+          {:ok, float()} | {:error, String.t()}
+  def train(x, y, iterations, lr = _learning_rate) do
+    0..iterations
+    |> Enum.reduce_while({0, 0}, fn iteration, {weight, _} ->
+      current_loss = loss(x, y, weight)
+
+      IO.puts("Iteration #{iteration} => Loss: #{current_loss |> Nx.to_number()}")
+
+      cond do
+        loss(x, y, weight + lr) < current_loss -> {:cont, {weight + lr, iteration}}
+        loss(x, y, weight - lr) < current_loss -> {:cont, {weight - lr, iteration}}
+        true -> {:halt, {weight, iteration}}
+      end
+    end)
+    |> case do
+      {_weight, ^iterations} -> {:error, "Couldn't converge within #{iterations}"}
+      {weight, number_of_iterations} -> {:ok, weight, number_of_iterations}
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Chapter1.LinearRegression, <<70, 79, 82, 49, 0, 0, 18, ...>>, {:train, 4}}
+```
+
+```elixir
+alias Chapter1.LinearRegression
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Chapter1.LinearRegression
+```
+
+Train the system with 10,000 iterations and a learning rate of 0.01.
+
+```elixir
+{:ok, weight, iterations} = LinearRegression.train(reservations, pizza, 10_000, 0.01)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Iteration 0 => Loss: 812.8666381835938
+Iteration 1 => Loss: 804.820556640625
+Iteration 2 => Loss: 796.8181762695312
+Iteration 3 => Loss: 788.8595581054688
+Iteration 4 => Loss: 780.9447021484375
+Iteration 5 => Loss: 773.0736694335938
+Iteration 6 => Loss: 765.246337890625
+Iteration 7 => Loss: 757.4628295898438
+Iteration 8 => Loss: 749.7229614257812
+Iteration 9 => Loss: 742.0269775390625
+Iteration 10 => Loss: 734.3746948242188
+Iteration 11 => Loss: 726.7661743164062
+Iteration 12 => Loss: 719.2013549804688
+Iteration 13 => Loss: 711.680419921875
+Iteration 14 => Loss: 704.203125
+Iteration 15 => Loss: 696.7696533203125
+Iteration 16 => Loss: 689.3799438476562
+Iteration 17 => Loss: 682.0339965820312
+Iteration 18 => Loss: 674.7317504882812
+Iteration 19 => Loss: 667.473388671875
+Iteration 20 => Loss: 660.2586669921875
+Iteration 21 => Loss: 653.0877685546875
+Iteration 22 => Loss: 645.9606323242188
+Iteration 23 => Loss: 638.877197265625
+Iteration 24 => Loss: 631.8375854492188
+Iteration 25 => Loss: 624.8416748046875
+Iteration 26 => Loss: 617.8895263671875
+Iteration 27 => Loss: 610.981201171875
+Iteration 28 => Loss: 604.1165771484375
+Iteration 29 => Loss: 597.2957763671875
+Iteration 30 => Loss: 590.5186767578125
+Iteration 31 => Loss: 583.7853393554688
+Iteration 32 => Loss: 577.0957641601562
+Iteration 33 => Loss: 570.4500122070312
+Iteration 34 => Loss: 563.8479614257812
+Iteration 35 => Loss: 557.2896728515625
+Iteration 36 => Loss: 550.775146484375
+Iteration 37 => Loss: 544.3043823242188
+Iteration 38 => Loss: 537.8773803710938
+Iteration 39 => Loss: 531.494140625
+Iteration 40 => Loss: 525.1546630859375
+Iteration 41 => Loss: 518.8589477539062
+Iteration 42 => Loss: 512.6069946289062
+Iteration 43 => Loss: 506.3988037109375
+Iteration 44 => Loss: 500.234375
+Iteration 45 => Loss: 494.1136779785156
+Iteration 46 => Loss: 488.0367431640625
+Iteration 47 => Loss: 482.0035705566406
+Iteration 48 => Loss: 476.0141906738281
+Iteration 49 => Loss: 470.06854248046875
+Iteration 50 => Loss: 464.1666564941406
+Iteration 51 => Loss: 458.30853271484375
+Iteration 52 => Loss: 452.49420166015625
+Iteration 53 => Loss: 446.7236022949219
+Iteration 54 => Loss: 440.9967346191406
+Iteration 55 => Loss: 435.31365966796875
+Iteration 56 => Loss: 429.6743469238281
+Iteration 57 => Loss: 424.0787658691406
+Iteration 58 => Loss: 418.5269775390625
+Iteration 59 => Loss: 413.0189514160156
+Iteration 60 => Loss: 407.5546569824219
+Iteration 61 => Loss: 402.1341247558594
+Iteration 62 => Loss: 396.75738525390625
+Iteration 63 => Loss: 391.42437744140625
+Iteration 64 => Loss: 386.1351623535156
+Iteration 65 => Loss: 380.8896789550781
+Iteration 66 => Loss: 375.68792724609375
+Iteration 67 => Loss: 370.52996826171875
+Iteration 68 => Loss: 365.4158020019531
+Iteration 69 => Loss: 360.3453369140625
+Iteration 70 => Loss: 355.3186950683594
+Iteration 71 => Loss: 350.33575439453125
+Iteration 72 => Loss: 345.3965759277344
+Iteration 73 => Loss: 340.50115966796875
+Iteration 74 => Loss: 335.6495361328125
+Iteration 75 => Loss: 330.8416748046875
+Iteration 76 => Loss: 326.0775451660156
+Iteration 77 => Loss: 321.3572082519531
+Iteration 78 => Loss: 316.68060302734375
+Iteration 79 => Loss: 312.0477600097656
+Iteration 80 => Loss: 307.4586486816406
+Iteration 81 => Loss: 302.9133605957031
+Iteration 82 => Loss: 298.4117736816406
+Iteration 83 => Loss: 293.9540100097656
+Iteration 84 => Loss: 289.53997802734375
+Iteration 85 => Loss: 285.1696472167969
+Iteration 86 => Loss: 280.8431396484375
+Iteration 87 => Loss: 276.5603942871094
+Iteration 88 => Loss: 272.3213806152344
+Iteration 89 => Loss: 268.12615966796875
+Iteration 90 => Loss: 263.97467041015625
+Iteration 91 => Loss: 259.8669128417969
+Iteration 92 => Loss: 255.80299377441406
+Iteration 93 => Loss: 251.78277587890625
+Iteration 94 => Loss: 247.8063507080078
+Iteration 95 => Loss: 243.87368774414062
+Iteration 96 => Loss: 239.98477172851562
+Iteration 97 => Loss: 236.13958740234375
+Iteration 98 => Loss: 232.3381805419922
+Iteration 99 => Loss: 228.58055114746094
+Iteration 100 => Loss: 224.86666870117188
+Iteration 101 => Loss: 221.19654846191406
+Iteration 102 => Loss: 217.57020568847656
+Iteration 103 => Loss: 213.9875946044922
+Iteration 104 => Loss: 210.44876098632812
+Iteration 105 => Loss: 206.95367431640625
+Iteration 106 => Loss: 203.50238037109375
+Iteration 107 => Loss: 200.0947723388672
+Iteration 108 => Loss: 196.73097229003906
+Iteration 109 => Loss: 193.4109344482422
+Iteration 110 => Loss: 190.13465881347656
+Iteration 111 => Loss: 186.9021453857422
+Iteration 112 => Loss: 183.71337890625
+Iteration 113 => Loss: 180.56838989257812
+Iteration 114 => Loss: 177.46714782714844
+Iteration 115 => Loss: 174.40966796875
+Iteration 116 => Loss: 171.39596557617188
+Iteration 117 => Loss: 168.42599487304688
+Iteration 118 => Loss: 165.4998016357422
+Iteration 119 => Loss: 162.61734008789062
+Iteration 120 => Loss: 159.77865600585938
+Iteration 121 => Loss: 156.98373413085938
+Iteration 122 => Loss: 154.23257446289062
+Iteration 123 => Loss: 151.52517700195312
+Iteration 124 => Loss: 148.86154174804688
+Iteration 125 => Loss: 146.24166870117188
+Iteration 126 => Loss: 143.66554260253906
+Iteration 127 => Loss: 141.13319396972656
+Iteration 128 => Loss: 138.64459228515625
+Iteration 129 => Loss: 136.1997528076172
+Iteration 130 => Loss: 133.79867553710938
+Iteration 131 => Loss: 131.4413604736328
+Iteration 132 => Loss: 129.12777709960938
+Iteration 133 => Loss: 126.85798645019531
+Iteration 134 => Loss: 124.6319351196289
+Iteration 135 => Loss: 122.44966125488281
+Iteration 136 => Loss: 120.31114196777344
+Iteration 137 => Loss: 118.21638488769531
+Iteration 138 => Loss: 116.16539001464844
+Iteration 139 => Loss: 114.15814971923828
+Iteration 140 => Loss: 112.19467163085938
+Iteration 141 => Loss: 110.27494812011719
+Iteration 142 => Loss: 108.39899444580078
+Iteration 143 => Loss: 106.5667953491211
+Iteration 144 => Loss: 104.77833557128906
+Iteration 145 => Loss: 103.03366088867188
+Iteration 146 => Loss: 101.3327407836914
+Iteration 147 => Loss: 99.67557525634766
+Iteration 148 => Loss: 98.06217956542969
+Iteration 149 => Loss: 96.49254608154297
+Iteration 150 => Loss: 94.96666717529297
+Iteration 151 => Loss: 93.48454284667969
+Iteration 152 => Loss: 92.04618835449219
+Iteration 153 => Loss: 90.65159606933594
+Iteration 154 => Loss: 89.3007583618164
+Iteration 155 => Loss: 87.99366760253906
+Iteration 156 => Loss: 86.73035430908203
+Iteration 157 => Loss: 85.51078033447266
+Iteration 158 => Loss: 84.3349838256836
+Iteration 159 => Loss: 83.20294952392578
+Iteration 160 => Loss: 82.11466217041016
+Iteration 161 => Loss: 81.07015228271484
+Iteration 162 => Loss: 80.06938171386719
+Iteration 163 => Loss: 79.11238861083984
+Iteration 164 => Loss: 78.19914245605469
+Iteration 165 => Loss: 77.32966613769531
+Iteration 166 => Loss: 76.50394439697266
+Iteration 167 => Loss: 75.72199249267578
+Iteration 168 => Loss: 74.9837875366211
+Iteration 169 => Loss: 74.28933715820312
+Iteration 170 => Loss: 73.63866424560547
+Iteration 171 => Loss: 73.03173828125
+Iteration 172 => Loss: 72.46858215332031
+Iteration 173 => Loss: 71.94918823242188
+Iteration 174 => Loss: 71.47354125976562
+Iteration 175 => Loss: 71.04166412353516
+Iteration 176 => Loss: 70.65354919433594
+Iteration 177 => Loss: 70.30918884277344
+Iteration 178 => Loss: 70.00858306884766
+Iteration 179 => Loss: 69.75174713134766
+Iteration 180 => Loss: 69.5386734008789
+Iteration 181 => Loss: 69.36934661865234
+Iteration 182 => Loss: 69.24378204345703
+Iteration 183 => Loss: 69.1619873046875
+Iteration 184 => Loss: 69.12394714355469
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:ok, 1.8400000000000014, 184}
+```
+
+Predict the number of pizzas for 20 reservations.
+
+```elixir
+prediction = LinearRegression.predict(20, weight) |> Nx.to_number()
+IO.puts("Prediction: x=20 => y=#{prediction}")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Prediction: x=20 => y=36.79999923706055
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+Plot the model overlayed on top of the data.
+
+```elixir
+min = reservations |> Nx.reduce_min() |> Nx.to_number() |> round() |> IO.inspect(label: "min")
+max = reservations |> Nx.reduce_max() |> Nx.to_number() |> round() |> IO.inspect(label: "max")
+
+Vl.new(width: 650, height: 300)
+|> Vl.layers([
+  Vl.new()
+  |> Vl.mark(:point, filled: true)
+  |> Vl.data_from_values(
+    Reservations: Nx.to_flat_list(reservations),
+    Pizzas: Nx.to_flat_list(pizza)
+  )
+  |> Vl.encode_field(:x, "Reservations", type: :quantitative)
+  |> Vl.encode_field(:y, "Pizzas", type: :quantitative),
+  Vl.new()
+  |> Vl.mark(:line, color: :pink)
+  |> Vl.data_from_values(
+    Reservations: [min, max],
+    Pizzas: Nx.to_flat_list(Nx.multiply(Nx.tensor([min, max]), weight))
+  )
+  |> Vl.encode_field(:x, "Reservations", type: :quantitative)
+  |> Vl.encode_field(:y, "Pizzas", type: :quantitative)
+])
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+min: 1
+max: 27
+```
+
+<!-- livebook:{"output":true} -->
+
+```vega-lite
+{"$schema":"https://vega.github.io/schema/vega-lite/v5.json","height":300,"layer":[{"data":{"values":[{"Pizzas":33.0,"Reservations":13.0},{"Pizzas":16.0,"Reservations":2.0},{"Pizzas":32.0,"Reservations":14.0},{"Pizzas":51.0,"Reservations":23.0},{"Pizzas":27.0,"Reservations":13.0},{"Pizzas":16.0,"Reservations":1.0},{"Pizzas":34.0,"Reservations":18.0},{"Pizzas":17.0,"Reservations":10.0},{"Pizzas":29.0,"Reservations":26.0},{"Pizzas":15.0,"Reservations":3.0},{"Pizzas":15.0,"Reservations":3.0},{"Pizzas":32.0,"Reservations":21.0},{"Pizzas":22.0,"Reservations":7.0},{"Pizzas":37.0,"Reservations":22.0},{"Pizzas":13.0,"Reservations":2.0},{"Pizzas":44.0,"Reservations":27.0},{"Pizzas":16.0,"Reservations":6.0},{"Pizzas":21.0,"Reservations":10.0},{"Pizzas":37.0,"Reservations":18.0},{"Pizzas":30.0,"Reservations":15.0},{"Pizzas":26.0,"Reservations":9.0},{"Pizzas":34.0,"Reservations":26.0},{"Pizzas":23.0,"Reservations":8.0},{"Pizzas":39.0,"Reservations":15.0},{"Pizzas":27.0,"Reservations":10.0},{"Pizzas":37.0,"Reservations":21.0},{"Pizzas":17.0,"Reservations":5.0},{"Pizzas":18.0,"Reservations":6.0},{"Pizzas":25.0,"Reservations":13.0},{"Pizzas":23.0,"Reservations":13.0}]},"encoding":{"x":{"field":"Reservations","type":"quantitative"},"y":{"field":"Pizzas","type":"quantitative"}},"mark":{"filled":true,"type":"point"}},{"data":{"values":[{"Pizzas":1.840000033378601,"Reservations":1},{"Pizzas":49.68000030517578,"Reservations":27}]},"encoding":{"x":{"field":"Reservations","type":"quantitative"},"y":{"field":"Pizzas","type":"quantitative"}},"mark":{"color":"pink","type":"line"}}],"width":650}
+```
+
+```elixir
+defmodule Chapter1.LinearRegressionWithBias do
+  import Nx.Defn
+
+  @doc """
+  For a given weight and bias, predict the output for a given input
+  """
+  @spec predict(Nx.Tensor.t(), number(), number()) :: Nx.Tensor.t()
+  defn predict(x, weight, bias) do
+    x * weight + bias
+  end
+
+  @doc """
+  Calculate the loss, as a mean squared error, for the given weight
+  """
+  @spec loss(Nx.Tensor.t(), Nx.Tensor.t(), number(), number()) :: number()
+  def loss(x, y, weight, bias) do
+    Nx.subtract(predict(x, weight, bias), y)
+    |> Nx.power(2)
+    |> Nx.mean()
+    |> Nx.to_number()
+  end
+
+  @doc """
+  Train a linear regression model with a maximum number of iterations
+  """
+  @spec train(Nx.Tensor.t(), Nx.Tensor.t(), non_neg_integer(), float()) ::
+          {:ok, float()} | {:error, String.t()}
+  def train(x, y, iterations, lr = _learning_rate) do
+    0..iterations
+    |> Enum.reduce_while({0, 0, 0}, fn iteration, {weight, bias, _} ->
+      current_loss = loss(x, y, weight, bias)
+
+      IO.puts("Iteration #{iteration} => Loss: #{current_loss |> Nx.to_number()}")
+
+      cond do
+        loss(x, y, weight + lr, bias) < current_loss ->
+          {:cont, {weight + lr, bias, iteration}}
+
+        loss(x, y, weight - lr, bias) < current_loss ->
+          {:cont, {weight - lr, bias, iteration}}
+
+        loss(x, y, weight, bias + lr) < current_loss ->
+          {:cont, {weight, bias + lr, iteration}}
+
+        loss(x, y, weight, bias - lr) < current_loss ->
+          {:cont, {weight, bias - lr, iteration}}
+
+        true ->
+          {:halt, {weight, bias, iteration}}
+      end
+    end)
+    |> case do
+      {_weight, _bias, ^iterations} -> {:error, "Couldn't converge within #{iterations}"}
+      {weight, bias, number_of_iterations} -> {:ok, weight, bias, number_of_iterations}
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Chapter1.LinearRegressionWithBias, <<70, 79, 82, 49, 0, 0, 20, ...>>, {:train, 4}}
+```
+
+```elixir
+alias Chapter1.LinearRegressionWithBias
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Chapter1.LinearRegressionWithBias
+```
+
+Train the system, using both a weight and bias, with 10,000 iterations and a learning rate of 0.01.
+
+```elixir
+{:ok, weight, bias, iterations} =
+  LinearRegressionWithBias.train(reservations, pizza, 10_000, 0.01)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+...
+Iteration 553 => Loss: 47.847782135009766
+Iteration 554 => Loss: 47.795814514160156
+Iteration 555 => Loss: 47.74403762817383
+Iteration 556 => Loss: 47.69247817993164
+Iteration 557 => Loss: 47.64110565185547
+Iteration 558 => Loss: 47.58994674682617
+Iteration 559 => Loss: 47.538978576660156
+Iteration 560 => Loss: 47.488216400146484
+Iteration 561 => Loss: 47.43764114379883
+Iteration 562 => Loss: 47.38727951049805
+Iteration 563 => Loss: 47.33710861206055
+Iteration 564 => Loss: 47.28713607788086
+Iteration 565 => Loss: 47.23737716674805
+Iteration 566 => Loss: 47.236087799072266
+Iteration 567 => Loss: 47.183982849121094
+Iteration 568 => Loss: 47.13208770751953
+Iteration 569 => Loss: 47.080387115478516
+Iteration 570 => Loss: 47.02888870239258
+Iteration 571 => Loss: 46.97758865356445
+Iteration 572 => Loss: 46.926490783691406
+Iteration 573 => Loss: 46.875587463378906
+Iteration 574 => Loss: 46.82488250732422
+Iteration 575 => Loss: 46.77438735961914
+Iteration 576 => Loss: 46.724082946777344
+Iteration 577 => Loss: 46.67399215698242
+Iteration 578 => Loss: 46.624088287353516
+Iteration 579 => Loss: 46.57439041137695
+Iteration 580 => Loss: 46.52488708496094
+Iteration 581 => Loss: 46.475582122802734
+Iteration 582 => Loss: 46.426490783691406
+Iteration 583 => Loss: 46.37758255004883
+Iteration 584 => Loss: 46.37697982788086
+Iteration 585 => Loss: 46.32575607299805
+Iteration 586 => Loss: 46.27471923828125
+Iteration 587 => Loss: 46.2238883972168
+Iteration 588 => Loss: 46.173255920410156
+Iteration 589 => Loss: 46.12281799316406
+Iteration 590 => Loss: 46.07258605957031
+Iteration 591 => Loss: 46.02254867553711
+Iteration 592 => Loss: 45.97271728515625
+Iteration 593 => Loss: 45.92308807373047
+Iteration 594 => Loss: 45.873653411865234
+Iteration 595 => Loss: 45.82441711425781
+Iteration 596 => Loss: 45.775390625
+Iteration 597 => Loss: 45.7265510559082
+Iteration 598 => Loss: 45.677921295166016
+Iteration 599 => Loss: 45.62948989868164
+Iteration 600 => Loss: 45.58124923706055
+Iteration 601 => Loss: 45.53321838378906
+Iteration 602 => Loss: 45.48538589477539
+Iteration 603 => Loss: 45.482948303222656
+Iteration 604 => Loss: 45.43278503417969
+Iteration 605 => Loss: 45.382816314697266
+Iteration 606 => Loss: 45.33305358886719
+Iteration 607 => Loss: 45.28348159790039
+Iteration 608 => Loss: 45.2341194152832
+Iteration 609 => Loss: 45.1849479675293
+Iteration 610 => Loss: 45.13597869873047
+Iteration 611 => Loss: 45.08721923828125
+Iteration 612 => Loss: 45.03864669799805
+Iteration 613 => Loss: 44.99028778076172
+Iteration 614 => Loss: 44.942115783691406
+Iteration 615 => Loss: 44.8941535949707
+Iteration 616 => Loss: 44.84638214111328
+Iteration 617 => Loss: 44.79881286621094
+Iteration 618 => Loss: 44.75144958496094
+Iteration 619 => Loss: 44.704280853271484
+Iteration 620 => Loss: 44.65732192993164
+Iteration 621 => Loss: 44.65557098388672
+Iteration 622 => Loss: 44.60626983642578
+Iteration 623 => Loss: 44.55717468261719
+Iteration 624 => Loss: 44.50827407836914
+Iteration 625 => Loss: 44.45957565307617
+Iteration 626 => Loss: 44.41107177734375
+Iteration 627 => Loss: 44.362770080566406
+Iteration 628 => Loss: 44.31467819213867
+Iteration 629 => Loss: 44.26676940917969
+Iteration 630 => Loss: 44.21907424926758
+Iteration 631 => Loss: 44.17156982421875
+Iteration 632 => Loss: 44.12427520751953
+Iteration 633 => Loss: 44.07716751098633
+Iteration 634 => Loss: 44.03026580810547
+Iteration 635 => Loss: 43.98357391357422
+Iteration 636 => Loss: 43.937068939208984
+Iteration 637 => Loss: 43.89077377319336
+Iteration 638 => Loss: 43.844669342041016
+Iteration 639 => Loss: 43.84360885620117
+Iteration 640 => Loss: 43.79518127441406
+Iteration 641 => Loss: 43.746944427490234
+Iteration 642 => Loss: 43.698909759521484
+Iteration 643 => Loss: 43.65107727050781
+Iteration 644 => Loss: 43.60344314575195
+Iteration 645 => Loss: 43.55601501464844
+Iteration 646 => Loss: 43.5087776184082
+Iteration 647 => Loss: 43.46174621582031
+Iteration 648 => Loss: 43.414913177490234
+Iteration 649 => Loss: 43.368282318115234
+Iteration 650 => Loss: 43.32184600830078
+Iteration 651 => Loss: 43.27561569213867
+Iteration 652 => Loss: 43.22957992553711
+Iteration 653 => Loss: 43.183738708496094
+Iteration 654 => Loss: 43.138118743896484
+Iteration 655 => Loss: 43.092674255371094
+Iteration 656 => Loss: 43.047447204589844
+Iteration 657 => Loss: 43.04709243774414
+Iteration 658 => Loss: 42.99951934814453
+Iteration 659 => Loss: 42.9521484375
+Iteration 660 => Loss: 42.90498733520508
+Iteration 661 => Loss: 42.858028411865234
+Iteration 662 => Loss: 42.811256408691406
+Iteration 663 => Loss: 42.764686584472656
+Iteration 664 => Loss: 42.71832275390625
+Iteration 665 => Loss: 42.67215347290039
+Iteration 666 => Loss: 42.62619400024414
+Iteration 667 => Loss: 42.580421447753906
+Iteration 668 => Loss: 42.53485870361328
+Iteration 669 => Loss: 42.4894905090332
+Iteration 670 => Loss: 42.44432067871094
+Iteration 671 => Loss: 42.39935302734375
+Iteration 672 => Loss: 42.35458755493164
+Iteration 673 => Loss: 42.310020446777344
+Iteration 674 => Loss: 42.26565170288086
+Iteration 675 => Loss: 42.22148895263672
+Iteration 676 => Loss: 42.21928787231445
+Iteration 677 => Loss: 42.172786712646484
+Iteration 678 => Loss: 42.12648010253906
+Iteration 679 => Loss: 42.080387115478516
+Iteration 680 => Loss: 42.034481048583984
+Iteration 681 => Loss: 41.98878479003906
+Iteration 682 => Loss: 41.94328308105469
+Iteration 683 => Loss: 41.89799118041992
+Iteration 684 => Loss: 41.852882385253906
+Iteration 685 => Loss: 41.8079833984375
+Iteration 686 => Loss: 41.763282775878906
+Iteration 687 => Loss: 41.718788146972656
+Iteration 688 => Loss: 41.67448806762695
+Iteration 689 => Loss: 41.63037872314453
+Iteration 690 => Loss: 41.58648681640625
+Iteration 691 => Loss: 41.542781829833984
+Iteration 692 => Loss: 41.49928665161133
+Iteration 693 => Loss: 41.45598220825195
+Iteration 694 => Loss: 41.4544792175293
+Iteration 695 => Loss: 41.40884780883789
+Iteration 696 => Loss: 41.36341094970703
+Iteration 697 => Loss: 41.31817626953125
+Iteration 698 => Loss: 41.27314376831055
+Iteration 699 => Loss: 41.22831344604492
+Iteration 700 => Loss: 41.183677673339844
+Iteration 701 => Loss: 41.139244079589844
+Iteration 702 => Loss: 41.09501647949219
+Iteration 703 => Loss: 41.05097961425781
+Iteration 704 => Loss: 41.007144927978516
+Iteration 705 => Loss: 40.9635124206543
+Iteration 706 => Loss: 40.92007827758789
+Iteration 707 => Loss: 40.87684631347656
+Iteration 708 => Loss: 40.83380889892578
+Iteration 709 => Loss: 40.79098129272461
+Iteration 710 => Loss: 40.74834442138672
+Iteration 711 => Loss: 40.70591354370117
+Iteration 712 => Loss: 40.70510482788086
+Iteration 713 => Loss: 40.66033172607422
+Iteration 714 => Loss: 40.61576461791992
+Iteration 715 => Loss: 40.57140350341797
+Iteration 716 => Loss: 40.52722930908203
+Iteration 717 => Loss: 40.48326873779297
+Iteration 718 => Loss: 40.43949890136719
+Iteration 719 => Loss: 40.395938873291016
+Iteration 720 => Loss: 40.35256576538086
+Iteration 721 => Loss: 40.30939865112305
+Iteration 722 => Loss: 40.26643371582031
+Iteration 723 => Loss: 40.22366714477539
+Iteration 724 => Loss: 40.18109893798828
+Iteration 725 => Loss: 40.13873291015625
+Iteration 726 => Loss: 40.0965690612793
+Iteration 727 => Loss: 40.054603576660156
+Iteration 728 => Loss: 40.01283645629883
+Iteration 729 => Loss: 39.97126770019531
+Iteration 730 => Loss: 39.97114944458008
+Iteration 731 => Loss: 39.927249908447266
+Iteration 732 => Loss: 39.88355255126953
+Iteration 733 => Loss: 39.84004592895508
+Iteration 734 => Loss: 39.7967529296875
+Iteration 735 => Loss: 39.7536506652832
+Iteration 736 => Loss: 39.71075439453125
+Iteration 737 => Loss: 39.66804885864258
+Iteration 738 => Loss: 39.62554931640625
+Iteration 739 => Loss: 39.583251953125
+Iteration 740 => Loss: 39.5411491394043
+Iteration 741 => Loss: 39.49925231933594
+Iteration 742 => Loss: 39.45754623413086
+Iteration 743 => Loss: 39.416053771972656
+Iteration 744 => Loss: 39.37474822998047
+Iteration 745 => Loss: 39.333656311035156
+Iteration 746 => Loss: 39.292747497558594
+Iteration 747 => Loss: 39.25205612182617
+Iteration 748 => Loss: 39.211551666259766
+Iteration 749 => Loss: 39.20958709716797
+Iteration 750 => Loss: 39.166751861572266
+Iteration 751 => Loss: 39.124122619628906
+Iteration 752 => Loss: 39.08168411254883
+Iteration 753 => Loss: 39.03945541381836
+Iteration 754 => Loss: 38.99742126464844
+Iteration 755 => Loss: 38.955589294433594
+Iteration 756 => Loss: 38.91395568847656
+Iteration 757 => Loss: 38.87251663208008
+Iteration 758 => Loss: 38.8312873840332
+Iteration 759 => Loss: 38.79024887084961
+Iteration 760 => Loss: 38.74942398071289
+Iteration 761 => Loss: 38.70878601074219
+Iteration 762 => Loss: 38.668357849121094
+Iteration 763 => Loss: 38.62812042236328
+Iteration 764 => Loss: 38.58808517456055
+Iteration 765 => Loss: 38.548255920410156
+Iteration 766 => Loss: 38.50862503051758
+Iteration 767 => Loss: 38.507347106933594
+Iteration 768 => Loss: 38.465389251708984
+Iteration 769 => Loss: 38.423622131347656
+Iteration 770 => Loss: 38.382057189941406
+Iteration 771 => Loss: 38.34069061279297
+Iteration 772 => Loss: 38.299522399902344
+Iteration 773 => Loss: 38.2585563659668
+Iteration 774 => Loss: 38.2177848815918
+Iteration 775 => Loss: 38.177223205566406
+Iteration 776 => Loss: 38.1368522644043
+Iteration 777 => Loss: 38.09668731689453
+Iteration 778 => Loss: 38.05672073364258
+Iteration 779 => Loss: 38.0169563293457
+Iteration 780 => Loss: 37.97739028930664
+Iteration 781 => Loss: 37.938026428222656
+Iteration 782 => Loss: 37.89885711669922
+Iteration 783 => Loss: 37.85989761352539
+Iteration 784 => Loss: 37.82112121582031
+Iteration 785 => Loss: 37.8205451965332
+Iteration 786 => Loss: 37.779441833496094
+Iteration 787 => Loss: 37.738548278808594
+Iteration 788 => Loss: 37.69784164428711
+Iteration 789 => Loss: 37.6573486328125
+Iteration 790 => Loss: 37.61704635620117
+Iteration 791 => Loss: 37.57695007324219
+Iteration 792 => Loss: 37.537044525146484
+Iteration 793 => Loss: 37.49734115600586
+Iteration 794 => Loss: 37.45784378051758
+Iteration 795 => Loss: 37.418540954589844
+Iteration 796 => Loss: 37.37944793701172
+Iteration 797 => Loss: 37.34054183959961
+Iteration 798 => Loss: 37.30184555053711
+Iteration 799 => Loss: 37.26334762573242
+Iteration 800 => Loss: 37.225040435791016
+Iteration 801 => Loss: 37.18694305419922
+Iteration 802 => Loss: 37.14904022216797
+Iteration 803 => Loss: 37.11134338378906
+Iteration 804 => Loss: 37.10893249511719
+Iteration 805 => Loss: 37.06890106201172
+Iteration 806 => Loss: 37.0290641784668
+Iteration 807 => Loss: 36.989437103271484
+Iteration 808 => Loss: 36.95000457763672
+Iteration 809 => Loss: 36.9107666015625
+Iteration 810 => Loss: 36.871726989746094
+Iteration 811 => Loss: 36.8328971862793
+Iteration 812 => Loss: 36.79426193237305
+Iteration 813 => Loss: 36.75583267211914
+Iteration 814 => Loss: 36.71760177612305
+Iteration 815 => Loss: 36.67957305908203
+Iteration 816 => Loss: 36.6417350769043
+Iteration 817 => Loss: 36.60409927368164
+Iteration 818 => Loss: 36.56666564941406
+Iteration 819 => Loss: 36.52943420410156
+Iteration 820 => Loss: 36.49239730834961
+Iteration 821 => Loss: 36.455562591552734
+Iteration 822 => Loss: 36.4538459777832
+Iteration 823 => Loss: 36.4146842956543
+Iteration 824 => Loss: 36.37571334838867
+Iteration 825 => Loss: 36.336952209472656
+Iteration 826 => Loss: 36.29838180541992
+Iteration 827 => Loss: 36.260013580322266
+Iteration 828 => Loss: 36.22184753417969
+Iteration 829 => Loss: 36.18387985229492
+Iteration 830 => Loss: 36.146114349365234
+Iteration 831 => Loss: 36.108543395996094
+Iteration 832 => Loss: 36.07118225097656
+Iteration 833 => Loss: 36.03401565551758
+Iteration 834 => Loss: 35.99705123901367
+Iteration 835 => Loss: 35.96028137207031
+Iteration 836 => Loss: 35.9237174987793
+Iteration 837 => Loss: 35.88734817504883
+Iteration 838 => Loss: 35.85118103027344
+Iteration 839 => Loss: 35.81521987915039
+Iteration 840 => Loss: 35.814186096191406
+Iteration 841 => Loss: 35.775882720947266
+Iteration 842 => Loss: 35.73778533935547
+Iteration 843 => Loss: 35.699886322021484
+Iteration 844 => Loss: 35.66218948364258
+Iteration 845 => Loss: 35.62468719482422
+Iteration 846 => Loss: 35.587379455566406
+Iteration 847 => Loss: 35.55028533935547
+Iteration 848 => Loss: 35.51338195800781
+Iteration 849 => Loss: 35.4766845703125
+Iteration 850 => Loss: 35.440185546875
+Iteration 851 => Loss: 35.40388488769531
+Iteration 852 => Loss: 35.3677864074707
+Iteration 853 => Loss: 35.33188247680664
+Iteration 854 => Loss: 35.29618453979492
+Iteration 855 => Loss: 35.26068115234375
+Iteration 856 => Loss: 35.22538375854492
+Iteration 857 => Loss: 35.19028854370117
+Iteration 858 => Loss: 35.1899528503418
+Iteration 859 => Loss: 35.152523040771484
+Iteration 860 => Loss: 35.11528778076172
+Iteration 861 => Loss: 35.07825469970703
+Iteration 862 => Loss: 35.041419982910156
+Iteration 863 => Loss: 35.00477981567383
+Iteration 864 => Loss: 34.96835708618164
+Iteration 865 => Loss: 34.9321174621582
+Iteration 866 => Loss: 34.89609146118164
+Iteration 867 => Loss: 34.86024856567383
+Iteration 868 => Loss: 34.82462692260742
+Iteration 869 => Loss: 34.789188385009766
+Iteration 870 => Loss: 34.75395202636719
+Iteration 871 => Loss: 34.71892166137695
+Iteration 872 => Loss: 34.68408966064453
+Iteration 873 => Loss: 34.64945602416992
+Iteration 874 => Loss: 34.615013122558594
+Iteration 875 => Loss: 34.58079147338867
+Iteration 876 => Loss: 34.5467529296875
+Iteration 877 => Loss: 34.54457092285156
+Iteration 878 => Loss: 34.50821304321289
+Iteration 879 => Loss: 34.472042083740234
+Iteration 880 => Loss: 34.43607711791992
+Iteration 881 => Loss: 34.40031051635742
+Iteration 882 => Loss: 34.364742279052734
+Iteration 883 => Loss: 34.32937240600586
+Iteration 884 => Loss: 34.29420852661133
+Iteration 885 => Loss: 34.259239196777344
+Iteration 886 => Loss: 34.2244758605957
+Iteration 887 => Loss: 34.18991470336914
+Iteration 888 => Loss: 34.155540466308594
+Iteration 889 => Loss: 34.121376037597656
+Iteration 890 => Loss: 34.08740997314453
+Iteration 891 => Loss: 34.05363845825195
+Iteration 892 => Loss: 34.020076751708984
+Iteration 893 => Loss: 33.98670959472656
+Iteration 894 => Loss: 33.95354461669922
+Iteration 895 => Loss: 33.95206832885742
+Iteration 896 => Loss: 33.91656494140625
+Iteration 897 => Loss: 33.88126754760742
+Iteration 898 => Loss: 33.846168518066406
+Iteration 899 => Loss: 33.81126403808594
+Iteration 900 => Loss: 33.77656555175781
+Iteration 901 => Loss: 33.742061614990234
+Iteration 902 => Loss: 33.707767486572266
+Iteration 903 => Loss: 33.67366409301758
+Iteration 904 => Loss: 33.639766693115234
+Iteration 905 => Loss: 33.60606384277344
+Iteration 906 => Loss: 33.57256317138672
+Iteration 907 => Loss: 33.53926467895508
+Iteration 908 => Loss: 33.506160736083984
+Iteration 909 => Loss: 33.473262786865234
+Iteration 910 => Loss: 33.4405632019043
+Iteration 911 => Loss: 33.40806579589844
+Iteration 912 => Loss: 33.37576675415039
+Iteration 913 => Loss: 33.37498092651367
+Iteration 914 => Loss: 33.34034729003906
+Iteration 915 => Loss: 33.30591583251953
+Iteration 916 => Loss: 33.27167892456055
+Iteration 917 => Loss: 33.237648010253906
+Iteration 918 => Loss: 33.20381164550781
+Iteration 919 => Loss: 33.17018127441406
+Iteration 920 => Loss: 33.13674545288086
+Iteration 921 => Loss: 33.103519439697266
+Iteration 922 => Loss: 33.07048034667969
+Iteration 923 => Loss: 33.03764724731445
+Iteration 924 => Loss: 33.00501251220703
+Iteration 925 => Loss: 32.97257995605469
+Iteration 926 => Loss: 32.940345764160156
+Iteration 927 => Loss: 32.90830993652344
+Iteration 928 => Loss: 32.87648391723633
+Iteration 929 => Loss: 32.844844818115234
+Iteration 930 => Loss: 32.813419342041016
+Iteration 931 => Loss: 32.813323974609375
+Iteration 932 => Loss: 32.7795524597168
+Iteration 933 => Loss: 32.74599075317383
+Iteration 934 => Loss: 32.712623596191406
+Iteration 935 => Loss: 32.6794548034668
+Iteration 936 => Loss: 32.64649200439453
+Iteration 937 => Loss: 32.61371994018555
+Iteration 938 => Loss: 32.58115768432617
+Iteration 939 => Loss: 32.54878616333008
+Iteration 940 => Loss: 32.516624450683594
+Iteration 941 => Loss: 32.484657287597656
+Iteration 942 => Loss: 32.452884674072266
+Iteration 943 => Loss: 32.421321868896484
+Iteration 944 => Loss: 32.389949798583984
+Iteration 945 => Loss: 32.35879135131836
+Iteration 946 => Loss: 32.32781982421875
+Iteration 947 => Loss: 32.29705810546875
+Iteration 948 => Loss: 32.26648712158203
+Iteration 949 => Loss: 32.23611831665039
+Iteration 950 => Loss: 32.23418045043945
+Iteration 951 => Loss: 32.20148468017578
+Iteration 952 => Loss: 32.16898727416992
+Iteration 953 => Loss: 32.13668441772461
+Iteration 954 => Loss: 32.104583740234375
+Iteration 955 => Loss: 32.07268524169922
+Iteration 956 => Loss: 32.040985107421875
+Iteration 957 => Loss: 32.00948715209961
+Iteration 958 => Loss: 31.97818374633789
+Iteration 959 => Loss: 31.94709014892578
+Iteration 960 => Loss: 31.91618537902832
+Iteration 961 => Loss: 31.88548469543457
+Iteration 962 => Loss: 31.8549861907959
+Iteration 963 => Loss: 31.824684143066406
+Iteration 964 => Loss: 31.794586181640625
+Iteration 965 => Loss: 31.764684677124023
+Iteration 966 => Loss: 31.734987258911133
+Iteration 967 => Loss: 31.70548439025879
+Iteration 968 => Loss: 31.704248428344727
+Iteration 969 => Loss: 31.67241668701172
+Iteration 970 => Loss: 31.640779495239258
+Iteration 971 => Loss: 31.609344482421875
+Iteration 972 => Loss: 31.57811737060547
+Iteration 973 => Loss: 31.547077178955078
+Iteration 974 => Loss: 31.516246795654297
+Iteration 975 => Loss: 31.485612869262695
+Iteration 976 => Loss: 31.455183029174805
+Iteration 977 => Loss: 31.424949645996094
+Iteration 978 => Loss: 31.394906997680664
+Iteration 979 => Loss: 31.365079879760742
+Iteration 980 => Loss: 31.335445404052734
+Iteration 981 => Loss: 31.30601692199707
+Iteration 982 => Loss: 31.276775360107422
+Iteration 983 => Loss: 31.24774742126465
+Iteration 984 => Loss: 31.21891212463379
+Iteration 985 => Loss: 31.190275192260742
+Iteration 986 => Loss: 31.189727783203125
+Iteration 987 => Loss: 31.158761978149414
+Iteration 988 => Loss: 31.127994537353516
+Iteration 989 => Loss: 31.097431182861328
+Iteration 990 => Loss: 31.067060470581055
+Iteration 991 => Loss: 31.036897659301758
+Iteration 992 => Loss: 31.006929397583008
+Iteration 993 => Loss: 30.97716522216797
+Iteration 994 => Loss: 30.947595596313477
+Iteration 995 => Loss: 30.918231964111328
+Iteration 996 => Loss: 30.88906478881836
+Iteration 997 => Loss: 30.860095977783203
+Iteration 998 => Loss: 30.831331253051758
+Iteration 999 => Loss: 30.80276107788086
+Iteration 1000 => Loss: 30.774396896362305
+Iteration 1001 => Loss: 30.74622917175293
+Iteration 1002 => Loss: 30.718265533447266
+Iteration 1003 => Loss: 30.69049835205078
+Iteration 1004 => Loss: 30.662927627563477
+Iteration 1005 => Loss: 30.66054916381836
+Iteration 1006 => Loss: 30.630645751953125
+Iteration 1007 => Loss: 30.600942611694336
+Iteration 1008 => Loss: 30.571447372436523
+Iteration 1009 => Loss: 30.542142868041992
+Iteration 1010 => Loss: 30.513050079345703
+Iteration 1011 => Loss: 30.48414421081543
+Iteration 1012 => Loss: 30.4554500579834
+Iteration 1013 => Loss: 30.42694664001465
+Iteration 1014 => Loss: 30.398643493652344
+Iteration 1015 => Loss: 30.370546340942383
+Iteration 1016 => Loss: 30.3426456451416
+Iteration 1017 => Loss: 30.3149471282959
+Iteration 1018 => Loss: 30.287446975708008
+Iteration 1019 => Loss: 30.260150909423828
+Iteration 1020 => Loss: 30.23304557800293
+Iteration 1021 => Loss: 30.20614242553711
+Iteration 1022 => Loss: 30.179447174072266
+Iteration 1023 => Loss: 30.177757263183594
+Iteration 1024 => Loss: 30.148717880249023
+Iteration 1025 => Loss: 30.119890213012695
+Iteration 1026 => Loss: 30.091251373291016
+Iteration 1027 => Loss: 30.06282615661621
+Iteration 1028 => Loss: 30.03458595275879
+Iteration 1029 => Loss: 30.006559371948242
+Iteration 1030 => Loss: 29.978723526000977
+Iteration 1031 => Loss: 29.95108413696289
+Iteration 1032 => Loss: 29.92365074157715
+Iteration 1033 => Loss: 29.896419525146484
+Iteration 1034 => Loss: 29.869388580322266
+Iteration 1035 => Loss: 29.842552185058594
+Iteration 1036 => Loss: 29.815921783447266
+Iteration 1037 => Loss: 29.78948974609375
+Iteration 1038 => Loss: 29.76325225830078
+Iteration 1039 => Loss: 29.737218856811523
+Iteration 1040 => Loss: 29.711389541625977
+Iteration 1041 => Loss: 29.710386276245117
+Iteration 1042 => Loss: 29.682222366333008
+Iteration 1043 => Loss: 29.654253005981445
+Iteration 1044 => Loss: 29.626487731933594
+Iteration 1045 => Loss: 29.598915100097656
+Iteration 1046 => Loss: 29.571550369262695
+Iteration 1047 => Loss: 29.54438591003418
+Iteration 1048 => Loss: 29.51742172241211
+Iteration 1049 => Loss: 29.490650177001953
+Iteration 1050 => Loss: 29.46408462524414
+Iteration 1051 => Loss: 29.437721252441406
+Iteration 1052 => Loss: 29.41155242919922
+Iteration 1053 => Loss: 29.385587692260742
+Iteration 1054 => Loss: 29.35982322692871
+Iteration 1055 => Loss: 29.33425521850586
+Iteration 1056 => Loss: 29.30888557434082
+Iteration 1057 => Loss: 29.283716201782227
+Iteration 1058 => Loss: 29.258752822875977
+Iteration 1059 => Loss: 29.258445739746094
+Iteration 1060 => Loss: 29.23114585876465
+Iteration 1061 => Loss: 29.20404815673828
+Iteration 1062 => Loss: 29.17714500427246
+Iteration 1063 => Loss: 29.150447845458984
+Iteration 1064 => Loss: 29.12394905090332
+Iteration 1065 => Loss: 29.097652435302734
+Iteration 1066 => Loss: 29.071544647216797
+Iteration 1067 => Loss: 29.045642852783203
+Iteration 1068 => Loss: 29.01995086669922
+Iteration 1069 => Loss: 28.99444580078125
+Iteration 1070 => Loss: 28.969148635864258
+Iteration 1071 => Loss: 28.94404411315918
+Iteration 1072 => Loss: 28.919153213500977
+Iteration 1073 => Loss: 28.894445419311523
+Iteration 1074 => Loss: 28.869943618774414
+Iteration 1075 => Loss: 28.845645904541016
+Iteration 1076 => Loss: 28.82154655456543
+Iteration 1077 => Loss: 28.797649383544922
+Iteration 1078 => Loss: 28.79550552368164
+Iteration 1079 => Loss: 28.76926612854004
+Iteration 1080 => Loss: 28.743236541748047
+Iteration 1081 => Loss: 28.717405319213867
+Iteration 1082 => Loss: 28.6917724609375
+Iteration 1083 => Loss: 28.666332244873047
+Iteration 1084 => Loss: 28.64109992980957
+Iteration 1085 => Loss: 28.616069793701172
+Iteration 1086 => Loss: 28.59123420715332
+Iteration 1087 => Loss: 28.566606521606445
+Iteration 1088 => Loss: 28.542165756225586
+Iteration 1089 => Loss: 28.51793670654297
+Iteration 1090 => Loss: 28.493900299072266
+Iteration 1091 => Loss: 28.47006607055664
+Iteration 1092 => Loss: 28.44643783569336
+Iteration 1093 => Loss: 28.423004150390625
+Iteration 1094 => Loss: 28.39977264404297
+Iteration 1095 => Loss: 28.376733779907227
+Iteration 1096 => Loss: 28.375274658203125
+Iteration 1097 => Loss: 28.34991455078125
+Iteration 1098 => Loss: 28.32474136352539
+Iteration 1099 => Loss: 28.299776077270508
+Iteration 1100 => Loss: 28.27501106262207
+Iteration 1101 => Loss: 28.25044822692871
+Iteration 1102 => Loss: 28.226076126098633
+Iteration 1103 => Loss: 28.2019100189209
+Iteration 1104 => Loss: 28.177949905395508
+Iteration 1105 => Loss: 28.1541748046875
+Iteration 1106 => Loss: 28.130615234375
+Iteration 1107 => Loss: 28.10724449157715
+Iteration 1108 => Loss: 28.084081649780273
+Iteration 1109 => Loss: 28.06110954284668
+Iteration 1110 => Loss: 28.038341522216797
+Iteration 1111 => Loss: 28.015775680541992
+Iteration 1112 => Loss: 27.993408203125
+Iteration 1113 => Loss: 27.971248626708984
+Iteration 1114 => Loss: 27.970487594604492
+Iteration 1115 => Loss: 27.945985794067383
+Iteration 1116 => Loss: 27.921688079833984
+Iteration 1117 => Loss: 27.8975887298584
+Iteration 1118 => Loss: 27.873693466186523
+Iteration 1119 => Loss: 27.849987030029297
+Iteration 1120 => Loss: 27.82648277282715
+Iteration 1121 => Loss: 27.803190231323242
+Iteration 1122 => Loss: 27.780088424682617
+Iteration 1123 => Loss: 27.75718879699707
+Iteration 1124 => Loss: 27.734487533569336
+Iteration 1125 => Loss: 27.71199607849121
+Iteration 1126 => Loss: 27.68968963623047
+Iteration 1127 => Loss: 27.667583465576172
+Iteration 1128 => Loss: 27.645687103271484
+Iteration 1129 => Loss: 27.62398910522461
+Iteration 1130 => Loss: 27.602487564086914
+Iteration 1131 => Loss: 27.581186294555664
+Iteration 1132 => Loss: 27.58111572265625
+Iteration 1133 => Loss: 27.55748748779297
+Iteration 1134 => Loss: 27.5340518951416
+Iteration 1135 => Loss: 27.51081657409668
+Iteration 1136 => Loss: 27.487783432006836
+Iteration 1137 => Loss: 27.464954376220703
+Iteration 1138 => Loss: 27.442317962646484
+Iteration 1139 => Loss: 27.419883728027344
+Iteration 1140 => Loss: 27.397653579711914
+Iteration 1141 => Loss: 27.3756160736084
+Iteration 1142 => Loss: 27.35378646850586
+Iteration 1143 => Loss: 27.332151412963867
+Iteration 1144 => Loss: 27.31072235107422
+Iteration 1145 => Loss: 27.28948402404785
+Iteration 1146 => Loss: 27.268449783325195
+Iteration 1147 => Loss: 27.247621536254883
+Iteration 1148 => Loss: 27.22698211669922
+Iteration 1149 => Loss: 27.206552505493164
+Iteration 1150 => Loss: 27.18631362915039
+Iteration 1151 => Loss: 27.18440818786621
+Iteration 1152 => Loss: 27.161848068237305
+Iteration 1153 => Loss: 27.139476776123047
+Iteration 1154 => Loss: 27.117307662963867
+Iteration 1155 => Loss: 27.09534454345703
+Iteration 1156 => Loss: 27.073575973510742
+Iteration 1157 => Loss: 27.052013397216797
+Iteration 1158 => Loss: 27.030641555786133
+Iteration 1159 => Loss: 27.00948143005371
+Iteration 1160 => Loss: 26.98851203918457
+Iteration 1161 => Loss: 26.967742919921875
+Iteration 1162 => Loss: 26.947179794311523
+Iteration 1163 => Loss: 26.926815032958984
+Iteration 1164 => Loss: 26.90664291381836
+Iteration 1165 => Loss: 26.886676788330078
+Iteration 1166 => Loss: 26.866912841796875
+Iteration 1167 => Loss: 26.847341537475586
+Iteration 1168 => Loss: 26.827980041503906
+Iteration 1169 => Loss: 26.82676887512207
+Iteration 1170 => Loss: 26.805063247680664
+Iteration 1171 => Loss: 26.7835636138916
+Iteration 1172 => Loss: 26.76226806640625
+Iteration 1173 => Loss: 26.741168975830078
+Iteration 1174 => Loss: 26.72027015686035
+Iteration 1175 => Loss: 26.69956398010254
+Iteration 1176 => Loss: 26.67906951904297
+Iteration 1177 => Loss: 26.658761978149414
+Iteration 1178 => Loss: 26.63866424560547
+Iteration 1179 => Loss: 26.6187686920166
+Iteration 1180 => Loss: 26.599069595336914
+Iteration 1181 => Loss: 26.57956314086914
+Iteration 1182 => Loss: 26.560264587402344
+Iteration 1183 => Loss: 26.541170120239258
+Iteration 1184 => Loss: 26.52226448059082
+Iteration 1185 => Loss: 26.503568649291992
+Iteration 1186 => Loss: 26.485069274902344
+Iteration 1187 => Loss: 26.48455238342285
+Iteration 1188 => Loss: 26.46371841430664
+Iteration 1189 => Loss: 26.443084716796875
+Iteration 1190 => Loss: 26.422651290893555
+Iteration 1191 => Loss: 26.402416229248047
+Iteration 1192 => Loss: 26.38238525390625
+Iteration 1193 => Loss: 26.362550735473633
+Iteration 1194 => Loss: 26.342918395996094
+Iteration 1195 => Loss: 26.323484420776367
+Iteration 1196 => Loss: 26.304250717163086
+Iteration 1197 => Loss: 26.285219192504883
+Iteration 1198 => Loss: 26.26638412475586
+Iteration 1199 => Loss: 26.24774932861328
+Iteration 1200 => Loss: 26.229318618774414
+Iteration 1201 => Loss: 26.211084365844727
+Iteration 1202 => Loss: 26.193050384521484
+Iteration 1203 => Loss: 26.17521858215332
+Iteration 1204 => Loss: 26.1575870513916
+Iteration 1205 => Loss: 26.14015007019043
+Iteration 1206 => Loss: 26.137788772583008
+Iteration 1207 => Loss: 26.11801528930664
+Iteration 1208 => Loss: 26.098451614379883
+Iteration 1209 => Loss: 26.079084396362305
+Iteration 1210 => Loss: 26.05992317199707
+Iteration 1211 => Loss: 26.040952682495117
+Iteration 1212 => Loss: 26.022188186645508
+Iteration 1213 => Loss: 26.003623962402344
+Iteration 1214 => Loss: 25.98525047302246
+Iteration 1215 => Loss: 25.967084884643555
+Iteration 1216 => Loss: 25.949125289916992
+Iteration 1217 => Loss: 25.931354522705078
+Iteration 1218 => Loss: 25.913785934448242
+Iteration 1219 => Loss: 25.896421432495117
+Iteration 1220 => Loss: 25.879249572753906
+Iteration 1221 => Loss: 25.862287521362305
+Iteration 1222 => Loss: 25.84552001953125
+Iteration 1223 => Loss: 25.828956604003906
+Iteration 1224 => Loss: 25.827281951904297
+Iteration 1225 => Loss: 25.808387756347656
+Iteration 1226 => Loss: 25.78969383239746
+Iteration 1227 => Loss: 25.77118682861328
+Iteration 1228 => Loss: 25.752891540527344
+Iteration 1229 => Loss: 25.73478889465332
+Iteration 1230 => Loss: 25.716890335083008
+Iteration 1231 => Loss: 25.69918441772461
+Iteration 1232 => Loss: 25.681690216064453
+Iteration 1233 => Loss: 25.66439437866211
+Iteration 1234 => Loss: 25.647287368774414
+Iteration 1235 => Loss: 25.63039207458496
+Iteration 1236 => Loss: 25.61368751525879
+Iteration 1237 => Loss: 25.597190856933594
+Iteration 1238 => Loss: 25.580888748168945
+Iteration 1239 => Loss: 25.564790725708008
+Iteration 1240 => Loss: 25.548892974853516
+Iteration 1241 => Loss: 25.53318977355957
+Iteration 1242 => Loss: 25.53221321105957
+Iteration 1243 => Loss: 25.514177322387695
+Iteration 1244 => Loss: 25.4963436126709
+Iteration 1245 => Loss: 25.478710174560547
+Iteration 1246 => Loss: 25.461278915405273
+Iteration 1247 => Loss: 25.44404411315918
+Iteration 1248 => Loss: 25.427011489868164
+Iteration 1249 => Loss: 25.410179138183594
+Iteration 1250 => Loss: 25.393543243408203
+Iteration 1251 => Loss: 25.377111434936523
+Iteration 1252 => Loss: 25.360877990722656
+Iteration 1253 => Loss: 25.344846725463867
+Iteration 1254 => Loss: 25.329011917114258
+Iteration 1255 => Loss: 25.313379287719727
+Iteration 1256 => Loss: 25.297943115234375
+Iteration 1257 => Loss: 25.282711029052734
+Iteration 1258 => Loss: 25.267677307128906
+Iteration 1259 => Loss: 25.252845764160156
+Iteration 1260 => Loss: 25.252565383911133
+Iteration 1261 => Loss: 25.23539924621582
+Iteration 1262 => Loss: 25.218435287475586
+Iteration 1263 => Loss: 25.2016658782959
+Iteration 1264 => Loss: 25.185100555419922
+Iteration 1265 => Loss: 25.168731689453125
+Iteration 1266 => Loss: 25.15256690979004
+Iteration 1267 => Loss: 25.136598587036133
+Iteration 1268 => Loss: 25.120832443237305
+Iteration 1269 => Loss: 25.105266571044922
+Iteration 1270 => Loss: 25.08989906311035
+Iteration 1271 => Loss: 25.074735641479492
+Iteration 1272 => Loss: 25.059764862060547
+Iteration 1273 => Loss: 25.045001983642578
+Iteration 1274 => Loss: 25.030431747436523
+Iteration 1275 => Loss: 25.01606559753418
+Iteration 1276 => Loss: 25.001901626586914
+Iteration 1277 => Loss: 24.987934112548828
+Iteration 1278 => Loss: 24.974163055419922
+Iteration 1279 => Loss: 24.972049713134766
+Iteration 1280 => Loss: 24.955949783325195
+Iteration 1281 => Loss: 24.940046310424805
+Iteration 1282 => Loss: 24.924348831176758
+Iteration 1283 => Loss: 24.90884780883789
+Iteration 1284 => Loss: 24.89354705810547
+Iteration 1285 => Loss: 24.878448486328125
+Iteration 1286 => Loss: 24.863550186157227
+Iteration 1287 => Loss: 24.848848342895508
+Iteration 1288 => Loss: 24.834348678588867
+Iteration 1289 => Loss: 24.820049285888672
+Iteration 1290 => Loss: 24.805946350097656
+Iteration 1291 => Loss: 24.792049407958984
+Iteration 1292 => Loss: 24.778348922729492
+Iteration 1293 => Loss: 24.764850616455078
+Iteration 1294 => Loss: 24.751548767089844
+Iteration 1295 => Loss: 24.738445281982422
+Iteration 1296 => Loss: 24.725549697875977
+Iteration 1297 => Loss: 24.724117279052734
+Iteration 1298 => Loss: 24.708887100219727
+Iteration 1299 => Loss: 24.693849563598633
+Iteration 1300 => Loss: 24.679018020629883
+Iteration 1301 => Loss: 24.66438102722168
+Iteration 1302 => Loss: 24.649951934814453
+Iteration 1303 => Loss: 24.635713577270508
+Iteration 1304 => Loss: 24.62168312072754
+Iteration 1305 => Loss: 24.60785484313965
+Iteration 1306 => Loss: 24.59421730041504
+Iteration 1307 => Loss: 24.580785751342773
+Iteration 1308 => Loss: 24.567548751831055
+Iteration 1309 => Loss: 24.55451774597168
+Iteration 1310 => Loss: 24.54168128967285
+Iteration 1311 => Loss: 24.529050827026367
+Iteration 1312 => Loss: 24.516624450683594
+Iteration 1313 => Loss: 24.504384994506836
+Iteration 1314 => Loss: 24.492351531982422
+Iteration 1315 => Loss: 24.49161720275879
+Iteration 1316 => Loss: 24.47725486755371
+Iteration 1317 => Loss: 24.463083267211914
+Iteration 1318 => Loss: 24.449121475219727
+Iteration 1319 => Loss: 24.435352325439453
+Iteration 1320 => Loss: 24.421781539916992
+Iteration 1321 => Loss: 24.40842056274414
+Iteration 1322 => Loss: 24.39525604248047
+Iteration 1323 => Loss: 24.38228416442871
+Iteration 1324 => Loss: 24.369518280029297
+Iteration 1325 => Loss: 24.356956481933594
+Iteration 1326 => Loss: 24.34458351135254
+Iteration 1327 => Loss: 24.332422256469727
+Iteration 1328 => Loss: 24.32045555114746
+Iteration 1329 => Loss: 24.308691024780273
+Iteration 1330 => Loss: 24.297117233276367
+Iteration 1331 => Loss: 24.285747528076172
+Iteration 1332 => Loss: 24.27458953857422
+Iteration 1333 => Loss: 24.2745418548584
+Iteration 1334 => Loss: 24.26104736328125
+Iteration 1335 => Loss: 24.24774169921875
+Iteration 1336 => Loss: 24.234647750854492
+Iteration 1337 => Loss: 24.221742630004883
+Iteration 1338 => Loss: 24.209047317504883
+Iteration 1339 => Loss: 24.19654655456543
+Iteration 1340 => Loss: 24.184242248535156
+Iteration 1341 => Loss: 24.172147750854492
+Iteration 1342 => Loss: 24.160242080688477
+Iteration 1343 => Loss: 24.148548126220703
+Iteration 1344 => Loss: 24.137042999267578
+Iteration 1345 => Loss: 24.125749588012695
+Iteration 1346 => Loss: 24.114646911621094
+Iteration 1347 => Loss: 24.103742599487305
+Iteration 1348 => Loss: 24.09304428100586
+Iteration 1349 => Loss: 24.082548141479492
+Iteration 1350 => Loss: 24.072246551513672
+Iteration 1351 => Loss: 24.06214141845703
+Iteration 1352 => Loss: 24.060270309448242
+Iteration 1353 => Loss: 24.04783058166504
+Iteration 1354 => Loss: 24.035602569580078
+Iteration 1355 => Loss: 24.023569107055664
+Iteration 1356 => Loss: 24.011730194091797
+Iteration 1357 => Loss: 24.000097274780273
+Iteration 1358 => Loss: 23.988670349121094
+Iteration 1359 => Loss: 23.97743797302246
+Iteration 1360 => Loss: 23.966398239135742
+Iteration 1361 => Loss: 23.955570220947266
+Iteration 1362 => Loss: 23.944929122924805
+Iteration 1363 => Loss: 23.934497833251953
+Iteration 1364 => Loss: 23.924264907836914
+Iteration 1365 => Loss: 23.91423797607422
+Iteration 1366 => Loss: 23.904401779174805
+Iteration 1367 => Loss: 23.894765853881836
+Iteration 1368 => Loss: 23.885337829589844
+Iteration 1369 => Loss: 23.876096725463867
+Iteration 1370 => Loss: 23.87491226196289
+Iteration 1371 => Loss: 23.863351821899414
+Iteration 1372 => Loss: 23.85198402404785
+Iteration 1373 => Loss: 23.84081268310547
+Iteration 1374 => Loss: 23.829845428466797
+Iteration 1375 => Loss: 23.8190860748291
+Iteration 1376 => Loss: 23.808515548706055
+Iteration 1377 => Loss: 23.798147201538086
+Iteration 1378 => Loss: 23.78798484802246
+Iteration 1379 => Loss: 23.778013229370117
+Iteration 1380 => Loss: 23.768251419067383
+Iteration 1381 => Loss: 23.75868034362793
+Iteration 1382 => Loss: 23.749319076538086
+Iteration 1383 => Loss: 23.740150451660156
+Iteration 1384 => Loss: 23.731178283691406
+Iteration 1385 => Loss: 23.7224178314209
+Iteration 1386 => Loss: 23.71384620666504
+Iteration 1387 => Loss: 23.70548439025879
+Iteration 1388 => Loss: 23.704984664916992
+Iteration 1389 => Loss: 23.694284439086914
+Iteration 1390 => Loss: 23.68378448486328
+Iteration 1391 => Loss: 23.673484802246094
+Iteration 1392 => Loss: 23.663387298583984
+Iteration 1393 => Loss: 23.65349006652832
+Iteration 1394 => Loss: 23.643787384033203
+Iteration 1395 => Loss: 23.63428497314453
+Iteration 1396 => Loss: 23.62498664855957
+Iteration 1397 => Loss: 23.61588478088379
+Iteration 1398 => Loss: 23.606983184814453
+Iteration 1399 => Loss: 23.59828758239746
+Iteration 1400 => Loss: 23.58978843688965
+Iteration 1401 => Loss: 23.581483840942383
+Iteration 1402 => Loss: 23.573383331298828
+Iteration 1403 => Loss: 23.565486907958984
+Iteration 1404 => Loss: 23.55778694152832
+Iteration 1405 => Loss: 23.5502872467041
+Iteration 1406 => Loss: 23.542985916137695
+Iteration 1407 => Loss: 23.540651321411133
+Iteration 1408 => Loss: 23.53101921081543
+Iteration 1409 => Loss: 23.521589279174805
+Iteration 1410 => Loss: 23.512351989746094
+Iteration 1411 => Loss: 23.503313064575195
+Iteration 1412 => Loss: 23.49448585510254
+Iteration 1413 => Loss: 23.485851287841797
+Iteration 1414 => Loss: 23.477418899536133
+Iteration 1415 => Loss: 23.46918296813965
+Iteration 1416 => Loss: 23.46115493774414
+Iteration 1417 => Loss: 23.453317642211914
+Iteration 1418 => Loss: 23.4456787109375
+Iteration 1419 => Loss: 23.43825340270996
+Iteration 1420 => Loss: 23.431018829345703
+Iteration 1421 => Loss: 23.42398452758789
+Iteration 1422 => Loss: 23.417150497436523
+Iteration 1423 => Loss: 23.410518646240234
+Iteration 1424 => Loss: 23.404085159301758
+Iteration 1425 => Loss: 23.402448654174805
+Iteration 1426 => Loss: 23.39368438720703
+Iteration 1427 => Loss: 23.385112762451172
+Iteration 1428 => Loss: 23.376745223999023
+Iteration 1429 => Loss: 23.368581771850586
+Iteration 1430 => Loss: 23.360612869262695
+Iteration 1431 => Loss: 23.35284996032715
+Iteration 1432 => Loss: 23.345277786254883
+Iteration 1433 => Loss: 23.33791732788086
+Iteration 1434 => Loss: 23.330747604370117
+Iteration 1435 => Loss: 23.323780059814453
+Iteration 1436 => Loss: 23.317014694213867
+Iteration 1437 => Loss: 23.31045150756836
+Iteration 1438 => Loss: 23.30408477783203
+Iteration 1439 => Loss: 23.29791259765625
+Iteration 1440 => Loss: 23.29195213317871
+Iteration 1441 => Loss: 23.286176681518555
+Iteration 1442 => Loss: 23.28061294555664
+Iteration 1443 => Loss: 23.279666900634766
+Iteration 1444 => Loss: 23.27176284790039
+Iteration 1445 => Loss: 23.264066696166992
+Iteration 1446 => Loss: 23.256572723388672
+Iteration 1447 => Loss: 23.249267578125
+Iteration 1448 => Loss: 23.24216651916504
+Iteration 1449 => Loss: 23.235267639160156
+Iteration 1450 => Loss: 23.228567123413086
+Iteration 1451 => Loss: 23.222063064575195
+Iteration 1452 => Loss: 23.21576690673828
+Iteration 1453 => Loss: 23.209672927856445
+Iteration 1454 => Loss: 23.203765869140625
+Iteration 1455 => Loss: 23.198060989379883
+Iteration 1456 => Loss: 23.192567825317383
+Iteration 1457 => Loss: 23.187265396118164
+Iteration 1458 => Loss: 23.182167053222656
+Iteration 1459 => Loss: 23.17726707458496
+Iteration 1460 => Loss: 23.17257308959961
+Iteration 1461 => Loss: 23.172311782836914
+Iteration 1462 => Loss: 23.165283203125
+Iteration 1463 => Loss: 23.158447265625
+Iteration 1464 => Loss: 23.15180778503418
+Iteration 1465 => Loss: 23.145381927490234
+Iteration 1466 => Loss: 23.139142990112305
+Iteration 1467 => Loss: 23.133113861083984
+Iteration 1468 => Loss: 23.127277374267578
+Iteration 1469 => Loss: 23.12164878845215
+Iteration 1470 => Loss: 23.116214752197266
+Iteration 1471 => Loss: 23.11097526550293
+Iteration 1472 => Loss: 23.105945587158203
+Iteration 1473 => Loss: 23.101110458374023
+Iteration 1474 => Loss: 23.096479415893555
+Iteration 1475 => Loss: 23.092042922973633
+Iteration 1476 => Loss: 23.08781623840332
+Iteration 1477 => Loss: 23.08378028869629
+Iteration 1478 => Loss: 23.07994270324707
+Iteration 1479 => Loss: 23.076313018798828
+Iteration 1480 => Loss: 23.074216842651367
+Iteration 1481 => Loss: 23.06825065612793
+Iteration 1482 => Loss: 23.06248664855957
+Iteration 1483 => Loss: 23.05691909790039
+Iteration 1484 => Loss: 23.051549911499023
+Iteration 1485 => Loss: 23.04638671875
+Iteration 1486 => Loss: 23.04141616821289
+Iteration 1487 => Loss: 23.036649703979492
+Iteration 1488 => Loss: 23.032085418701172
+Iteration 1489 => Loss: 23.02771759033203
+Iteration 1490 => Loss: 23.02355194091797
+Iteration 1491 => Loss: 23.01958465576172
+Iteration 1492 => Loss: 23.015819549560547
+Iteration 1493 => Loss: 23.012248992919922
+Iteration 1494 => Loss: 23.008886337280273
+Iteration 1495 => Loss: 23.005718231201172
+Iteration 1496 => Loss: 23.00275230407715
+Iteration 1497 => Loss: 22.99998664855957
+Iteration 1498 => Loss: 22.998586654663086
+Iteration 1499 => Loss: 22.99349021911621
+Iteration 1500 => Loss: 22.988590240478516
+Iteration 1501 => Loss: 22.98388671875
+Iteration 1502 => Loss: 22.979389190673828
+Iteration 1503 => Loss: 22.975086212158203
+Iteration 1504 => Loss: 22.97098731994629
+Iteration 1505 => Loss: 22.96708869934082
+Iteration 1506 => Loss: 22.963388442993164
+Iteration 1507 => Loss: 22.959888458251953
+Iteration 1508 => Loss: 22.956586837768555
+Iteration 1509 => Loss: 22.953489303588867
+Iteration 1510 => Loss: 22.950586318969727
+Iteration 1511 => Loss: 22.94788932800293
+Iteration 1512 => Loss: 22.94538688659668
+Iteration 1513 => Loss: 22.943090438842773
+Iteration 1514 => Loss: 22.94098663330078
+Iteration 1515 => Loss: 22.939088821411133
+Iteration 1516 => Loss: 22.938379287719727
+Iteration 1517 => Loss: 22.934144973754883
+Iteration 1518 => Loss: 22.930116653442383
+Iteration 1519 => Loss: 22.92627716064453
+Iteration 1520 => Loss: 22.922649383544922
+Iteration 1521 => Loss: 22.919212341308594
+Iteration 1522 => Loss: 22.915983200073242
+Iteration 1523 => Loss: 22.912944793701172
+Iteration 1524 => Loss: 22.910112380981445
+Iteration 1525 => Loss: 22.907480239868164
+Iteration 1526 => Loss: 22.905046463012695
+Iteration 1527 => Loss: 22.902814865112305
+Iteration 1528 => Loss: 22.900779724121094
+Iteration 1529 => Loss: 22.898950576782227
+Iteration 1530 => Loss: 22.89731216430664
+Iteration 1531 => Loss: 22.895877838134766
+Iteration 1532 => Loss: 22.8946475982666
+Iteration 1533 => Loss: 22.893617630004883
+Iteration 1534 => Loss: 22.893598556518555
+Iteration 1535 => Loss: 22.890235900878906
+Iteration 1536 => Loss: 22.887065887451172
+Iteration 1537 => Loss: 22.884098052978516
+Iteration 1538 => Loss: 22.88133430480957
+Iteration 1539 => Loss: 22.87876319885254
+Iteration 1540 => Loss: 22.876394271850586
+Iteration 1541 => Loss: 22.87423324584961
+Iteration 1542 => Loss: 22.872270584106445
+Iteration 1543 => Loss: 22.870500564575195
+Iteration 1544 => Loss: 22.86893081665039
+Iteration 1545 => Loss: 22.867565155029297
+Iteration 1546 => Loss: 22.866397857666016
+Iteration 1547 => Loss: 22.865434646606445
+Iteration 1548 => Loss: 22.864665985107422
+Iteration 1549 => Loss: 22.864103317260742
+Iteration 1550 => Loss: 22.863733291625977
+Iteration 1551 => Loss: 22.86355972290039
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:ok, 1.1000000000000008, 12.929999999999769, 1551}
+```
+
+Predict the number of pizzas for 20 reservations, this time using a bias in addition to a weight.
+
+```elixir
+prediction = LinearRegressionWithBias.predict(20, weight, bias) |> Nx.to_number()
+IO.puts("Prediction: x=20 => y=#{prediction}")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Prediction: x=20 => y=34.93000030517578
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+Plot the model overlayed on top of the data.
+
+```elixir
+Vl.new(width: 650, height: 300)
+|> Vl.layers([
+  Vl.new()
+  |> Vl.mark(:point, filled: true)
+  |> Vl.data_from_values(
+    Reservations: Nx.to_flat_list(reservations),
+    Pizzas: Nx.to_flat_list(pizza)
+  )
+  |> Vl.encode_field(:x, "Reservations", type: :quantitative)
+  |> Vl.encode_field(:y, "Pizzas", type: :quantitative),
+  Vl.new()
+  |> Vl.mark(:line, color: :pink)
+  |> Vl.data_from_values(
+    Reservations: [min, max],
+    Pizzas:
+      Nx.tensor([min, max])
+      |> Nx.multiply(weight)
+      |> Nx.add(bias)
+      |> Nx.to_flat_list()
+  )
+  |> Vl.encode_field(:x, "Reservations", type: :quantitative)
+  |> Vl.encode_field(:y, "Pizzas", type: :quantitative)
+])
+```
+
+<!-- livebook:{"output":true} -->
+
+```vega-lite
+{"$schema":"https://vega.github.io/schema/vega-lite/v5.json","height":300,"layer":[{"data":{"values":[{"Pizzas":33.0,"Reservations":13.0},{"Pizzas":16.0,"Reservations":2.0},{"Pizzas":32.0,"Reservations":14.0},{"Pizzas":51.0,"Reservations":23.0},{"Pizzas":27.0,"Reservations":13.0},{"Pizzas":16.0,"Reservations":1.0},{"Pizzas":34.0,"Reservations":18.0},{"Pizzas":17.0,"Reservations":10.0},{"Pizzas":29.0,"Reservations":26.0},{"Pizzas":15.0,"Reservations":3.0},{"Pizzas":15.0,"Reservations":3.0},{"Pizzas":32.0,"Reservations":21.0},{"Pizzas":22.0,"Reservations":7.0},{"Pizzas":37.0,"Reservations":22.0},{"Pizzas":13.0,"Reservations":2.0},{"Pizzas":44.0,"Reservations":27.0},{"Pizzas":16.0,"Reservations":6.0},{"Pizzas":21.0,"Reservations":10.0},{"Pizzas":37.0,"Reservations":18.0},{"Pizzas":30.0,"Reservations":15.0},{"Pizzas":26.0,"Reservations":9.0},{"Pizzas":34.0,"Reservations":26.0},{"Pizzas":23.0,"Reservations":8.0},{"Pizzas":39.0,"Reservations":15.0},{"Pizzas":27.0,"Reservations":10.0},{"Pizzas":37.0,"Reservations":21.0},{"Pizzas":17.0,"Reservations":5.0},{"Pizzas":18.0,"Reservations":6.0},{"Pizzas":25.0,"Reservations":13.0},{"Pizzas":23.0,"Reservations":13.0}]},"encoding":{"x":{"field":"Reservations","type":"quantitative"},"y":{"field":"Pizzas","type":"quantitative"}},"mark":{"filled":true,"type":"point"}},{"data":{"values":[{"Pizzas":14.030000686645508,"Reservations":1},{"Pizzas":42.630001068115234,"Reservations":27}]},"encoding":{"x":{"field":"Reservations","type":"quantitative"},"y":{"field":"Pizzas","type":"quantitative"}},"mark":{"color":"pink","type":"line"}}],"width":650}
+```
