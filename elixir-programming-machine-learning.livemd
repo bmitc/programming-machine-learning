@@ -21,6 +21,58 @@ alias VegaLite, as: Vl
 <!-- livebook:{"output":true} -->
 
 ```
+Resolving Hex dependencies...
+Resolution completed in 0.259s
+New:
+  complex 0.5.0
+  fss 0.1.1
+  kino 0.12.0
+  kino_vega_lite 0.1.11
+  nimble_csv 1.2.0
+  nx 0.6.4
+  table 0.1.2
+  telemetry 1.2.1
+  vega_lite 0.1.8
+* Getting nimble_csv (Hex package)
+* Getting nx (Hex package)
+* Getting vega_lite (Hex package)
+* Getting kino_vega_lite (Hex package)
+* Getting kino (Hex package)
+* Getting table (Hex package)
+* Getting fss (Hex package)
+* Getting complex (Hex package)
+* Getting telemetry (Hex package)
+==> table
+Compiling 5 files (.ex)
+Generated table app
+==> vega_lite
+Compiling 6 files (.ex)
+Generated vega_lite app
+===> Analyzing applications...
+===> Compiling telemetry
+==> nimble_csv
+Compiling 1 file (.ex)
+Generated nimble_csv app
+==> fss
+Compiling 4 files (.ex)
+Generated fss app
+==> complex
+Compiling 2 files (.ex)
+Generated complex app
+==> nx
+Compiling 32 files (.ex)
+Generated nx app
+==> kino
+Compiling 47 files (.ex)
+Generated kino app
+==> kino_vega_lite
+Compiling 4 files (.ex)
+Generated kino_vega_lite app
+```
+
+<!-- livebook:{"output":true} -->
+
+```
 VegaLite
 ```
 
@@ -62,7 +114,7 @@ Load the `pizza.txt` data file and plot the data. The data lists an historical r
 CSV.define(MyParser, separator: "\s")
 
 {reservations, pizza} =
-  Path.join(__ENV__.file, "../../data/pizza.txt")
+  Path.join(__ENV__.file, "../data/pizza.txt")
   |> Path.expand()
   |> File.stream!()
   |> Enum.map(fn line ->
@@ -165,6 +217,14 @@ defmodule Chapter1.LinearRegression do
     end
   end
 end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+warning: Nx.power/2 is deprecated. Use pow/2 instead
+  Documents/GitHub/programming-machine-learning/elixir-programming-machine-learning.livemd#cell:nqqujb6hpyj5ccz47utn3mxcrjwgqju7:18: Chapter1.LinearRegression.loss/3
+
 ```
 
 <!-- livebook:{"output":true} -->
@@ -502,6 +562,14 @@ defmodule Chapter1.LinearRegressionWithBias do
     end
   end
 end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+warning: Nx.power/2 is deprecated. Use pow/2 instead
+  Documents/GitHub/programming-machine-learning/elixir-programming-machine-learning.livemd#cell:b5epztx5m4c3j37x3tmrdkfuk32ajm5i:18: Chapter1.LinearRegressionWithBias.loss/4
+
 ```
 
 <!-- livebook:{"output":true} -->
