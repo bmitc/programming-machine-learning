@@ -1,3 +1,5 @@
+**Update**: This project keeps getting put aside, and then me coming back to it. Lately, I am interested in actually completing the book, which is for obvious purposes, but using all three of Python, F#, and Elixir with their respective notebook solutions as a point of learning and comparison.
+
 # Programming Machine Learning
 
 F# implementations of the machine learning projects in the book [Programming Machine Learning: From Coding to Deep Learning](https://pragprog.com/titles/pplearn/programming-machine-learning/).
